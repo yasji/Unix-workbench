@@ -114,6 +114,29 @@ local GiftState = {
 local AutoGift, SelectedItem, TargetPlayer, GiftStatus, MaxDistance, HoldDuration
 local GiftRetries, RetryDelay, AutoRetry, AutoTeleport, TeleportDistance, TeleportOffset
 
+-- Safe status update to avoid indexing Text on non-text instances (e.g., ImageButton)
+local function SetGiftStatus(msg)
+    if not msg then return end
+    if type(GiftStatus) == "table" then
+        GiftStatus.Text = msg
+        if GiftStatus.SetText then pcall(function() GiftStatus:SetText(msg) end) end
+        if GiftStatus.Set then pcall(function() GiftStatus:Set(msg) end) end
+        return
+    end
+    if typeof(GiftStatus) == "Instance" then
+        if GiftStatus:IsA("TextLabel") or GiftStatus:IsA("TextButton") then
+            pcall(function() GiftStatus.Text = msg end)
+            return
+        end
+        local ok, label = pcall(function()
+            return GiftStatus:FindFirstChildWhichIsA("TextLabel", true) or GiftStatus:FindFirstChildWhichIsA("TextButton", true)
+        end)
+        if ok and label then
+            pcall(function() label.Text = msg end)
+        end
+    end
+end
+
 local function CreateWindow()
     if UseReGui then
         local success, window = pcall(function()
@@ -378,11 +401,21 @@ local function FindGiftButton(targetPlayer)
                     local text = ""
                     local name = descendant.Name:lower()
                     
-                    -- Safely get text
-                    if descendant:FindFirstChild("Text") then
-                        text = tostring(descendant.Text):lower()
-                    elseif descendant.Text then
-                        text = tostring(descendant.Text):lower()
+                    -- Safely get text property
+                    local success, textValue = pcall(function()
+                        if descendant:IsA("TextButton") or descendant:IsA("TextLabel") then
+                            return descendant.Text
+                        elseif descendant:FindFirstChild("TextLabel") then
+                            return descendant.TextLabel.Text
+                        elseif descendant:FindFirstChild("Text") and descendant.Text:IsA("StringValue") then
+                            return descendant.Text.Value
+                        else
+                            return ""
+                        end
+                    end)
+                    
+                    if success then
+                        text = tostring(textValue):lower()
                     end
                     
                     -- Check for gift-related keywords
@@ -391,6 +424,9 @@ local function FindGiftButton(targetPlayer)
                         print(`🎁 Found gift button: {descendant.Name} - "{text}" in {gui.Name}`)
                         return descendant
                     end
+                    
+                    -- Log all buttons for debugging
+                    print(`🔍 Button found: {descendant.Name} ({descendant.ClassName}) - Text: "{text}"`)
                 end
             end
         end
@@ -663,7 +699,7 @@ local function ProcessGift(ItemName, TargetName)
     local LastGift = GiftState.LastGiftTime[TargetName] or 0
     
     if Now - LastGift < GiftConfig.Cooldown then
-        GiftStatus.Text = `Cooldown: {TargetName}`
+    SetGiftStatus(`Cooldown: {TargetName}`)
         return false
     end
     
@@ -678,14 +714,14 @@ local function ProcessGift(ItemName, TargetName)
             Retries = 0
         }
         
-        GiftStatus.Text = `Auto-Sent: {ItemName} → {TargetName}`
+    SetGiftStatus(`Auto-Sent: {ItemName} → {TargetName}`)
         
         -- Check acceptance in background
         coroutine.wrap(function()
             local Accepted = CheckGiftAcceptance(GiftId)
             if Accepted then
                 GiftState.AcceptedGifts[GiftId] = GiftState.PendingGifts[GiftId]
-                GiftStatus.Text = `✅ Accepted: {ItemName} by {TargetName}`
+                SetGiftStatus(`✅ Accepted: {ItemName} by {TargetName}`)
             else
                 GiftState.RejectedGifts[GiftId] = GiftState.PendingGifts[GiftId]
                 if AutoRetry.Value and GiftState.PendingGifts[GiftId].Retries < GiftRetries.Value then
@@ -695,9 +731,9 @@ local function ProcessGift(ItemName, TargetName)
                         Item = ItemName,
                         Target = TargetName
                     }
-                    GiftStatus.Text = `🔄 Queued retry: {ItemName} → {TargetName}`
+                    SetGiftStatus(`🔄 Queued retry: {ItemName} → {TargetName}`)
                 else
-                    GiftStatus.Text = `❌ Rejected: {ItemName} by {TargetName}`
+                    SetGiftStatus(`❌ Rejected: {ItemName} by {TargetName}`)
                 end
             end
             GiftState.PendingGifts[GiftId] = nil
@@ -705,7 +741,7 @@ local function ProcessGift(ItemName, TargetName)
         
         return true
     else
-        GiftStatus.Text = `❌ Failed: {Message or "Unknown error"}`
+    SetGiftStatus(`❌ Failed: {Message or "Unknown error"}`)
         return false
     end
 end
@@ -720,13 +756,13 @@ local function AutoGiftLoop()
     local TargetName = TargetPlayer and TargetPlayer.Selected or SelectedTargetName
     
     if not ItemName or ItemName == "" then
-        if GiftStatus and GiftStatus.Text then GiftStatus.Text = "No item selected" end
+    SetGiftStatus("No item selected")
         return
     end
     
     local Items = GetGiftableItems()
     if not Items[ItemName] then
-        if GiftStatus and GiftStatus.Text then GiftStatus.Text = "Item not found" end
+    SetGiftStatus("Item not found")
         return
     end
     
@@ -757,10 +793,10 @@ local function AutoGiftLoop()
                     local Success, Message = TeleportToPlayer(Target.Name, teleportOffset)
                     
                     if Success then
-                        if GiftStatus and GiftStatus.Text then GiftStatus.Text = `📍 {Message}` end
+                        SetGiftStatus(`📍 {Message}`)
                         wait(0.5) -- Brief delay after teleporting
                     else
-                        if GiftStatus and GiftStatus.Text then GiftStatus.Text = `❌ Teleport failed: {Message}` end
+                        SetGiftStatus(`❌ Teleport failed: {Message}`)
                         return
                     end
                 end
@@ -771,7 +807,7 @@ local function AutoGiftLoop()
     end
     
     if not Target then
-        if GiftStatus and GiftStatus.Text then GiftStatus.Text = "🔍 No target found" end
+    SetGiftStatus("🔍 No target found")
         return
     end
     
@@ -819,11 +855,7 @@ local function HandleAutomatedGifting()
             local TeleportSuccess, Message = TeleportToPlayer(TargetName, teleportOffset)
             
             if TeleportSuccess then
-                if GiftStatus then 
-                    if type(GiftStatus) == "table" and GiftStatus.Text then
-                        GiftStatus.Text = `📍 Auto-teleported to {TargetName}`
-                    end
-                end
+                SetGiftStatus(`📍 Auto-teleported to {TargetName}`)
                 wait(0.5)
             else
                 warn(`❌ Auto-teleport failed: {Message}`)
@@ -845,9 +877,7 @@ local function HandleAutomatedGifting()
                 
                 -- Update status safely
                 if GiftStatus then 
-                    if type(GiftStatus) == "table" and GiftStatus.Text then
-                        GiftStatus.Text = `🎁 Auto-gifting {ItemName} to {TargetName}...`
-                    end
+                    SetGiftStatus(`🎁 Auto-gifting {ItemName} to {TargetName}...`)
                 end
                 
                 -- Look at target
@@ -895,7 +925,7 @@ UserInputService.InputBegan:Connect(function(Input, GameProcessed)
         
         -- Manual gift trigger
         ProcessGift(ItemName, Target.Name)
-        GiftStatus.Text = `🎮 Manual gift: {ItemName} → {Target.Name}`
+    SetGiftStatus(`🎮 Manual gift: {ItemName} → {Target.Name}`)
     end
 end)
 
@@ -1243,15 +1273,36 @@ _G.ScanGiftUI = function()
             
             for _, descendant in ipairs(gui:GetDescendants()) do
                 if descendant:IsA("GuiButton") or descendant:IsA("TextButton") or descendant:IsA("ImageButton") then
-                    local text = descendant.Text and descendant.Text:lower() or ""
+                    local text = ""
+                    if descendant:IsA("TextButton") or descendant:IsA("TextLabel") then
+                        local ok, val = pcall(function() return descendant.Text end)
+                        if ok then text = (val or ""):lower() end
+                    else
+                        local label = descendant:FindFirstChildWhichIsA("TextLabel", true)
+                        if label then
+                            local ok2, val2 = pcall(function() return label.Text end)
+                            if ok2 then text = (val2 or ""):lower() end
+                        end
+                    end
                     local name = descendant.Name:lower()
                     
                     if text:find("gift") or text:find("trade") or text:find("give") or
                        name:find("gift") or name:find("trade") or name:find("give") then
+                        local displayText = "No text"
+                        if descendant:IsA("TextButton") or descendant:IsA("TextLabel") then
+                            local ok3, val3 = pcall(function() return descendant.Text end)
+                            if ok3 then displayText = val3 or "" end
+                        else
+                            local label2 = descendant:FindFirstChildWhichIsA("TextLabel", true)
+                            if label2 then
+                                local ok4, val4 = pcall(function() return label2.Text end)
+                                if ok4 then displayText = val4 or "" end
+                            end
+                        end
                         table.insert(foundElements, {
                             gui = gui.Name,
                             element = descendant.Name,
-                            text = descendant.Text or "No text",
+                            text = displayText,
                             visible = descendant.Visible
                         })
                     end

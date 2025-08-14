@@ -114,29 +114,6 @@ local GiftState = {
 local AutoGift, SelectedItem, TargetPlayer, GiftStatus, MaxDistance, HoldDuration
 local GiftRetries, RetryDelay, AutoRetry, AutoTeleport, TeleportDistance, TeleportOffset
 
--- Safe status update to avoid indexing Text on non-text instances (e.g., ImageButton)
-local function SetGiftStatus(msg)
-    if not msg then return end
-    if type(GiftStatus) == "table" then
-        GiftStatus.Text = msg
-        if GiftStatus.SetText then pcall(function() GiftStatus:SetText(msg) end) end
-        if GiftStatus.Set then pcall(function() GiftStatus:Set(msg) end) end
-        return
-    end
-    if typeof(GiftStatus) == "Instance" then
-        if GiftStatus:IsA("TextLabel") or GiftStatus:IsA("TextButton") then
-            pcall(function() GiftStatus.Text = msg end)
-            return
-        end
-        local ok, label = pcall(function()
-            return GiftStatus:FindFirstChildWhichIsA("TextLabel", true) or GiftStatus:FindFirstChildWhichIsA("TextButton", true)
-        end)
-        if ok and label then
-            pcall(function() label.Text = msg end)
-        end
-    end
-end
-
 local function CreateWindow()
     if UseReGui then
         local success, window = pcall(function()
@@ -385,49 +362,38 @@ local function FindGiftButton(targetPlayer)
     -- Look for gift-related UI elements in PlayerGui
     local playerGui = LocalPlayer.PlayerGui
     
-    -- Wait a moment for UI to load
-    wait(0.5)
+    -- Common gift UI names in Roblox games
+    local giftUINames = {
+        "GiftGui", "TradeGui", "PlayerInteraction", "InteractionGui", 
+        "GiftInterface", "PlayerMenu", "SocialGui", "PlayerActions"
+    }
     
-    print("🔍 Scanning PlayerGui for gift interfaces...")
-    
-    -- Check all ScreenGuis
-    for _, gui in ipairs(playerGui:GetChildren()) do
-        if gui:IsA("ScreenGui") and gui.Enabled then
-            print(`📋 Checking GUI: {gui.Name}`)
+    for _, guiName in ipairs(giftUINames) do
+        local gui = playerGui:FindFirstChild(guiName)
+        if gui then
+            -- Look for gift-related buttons
+            local giftButtons = {}
             
-            -- Look for gift-related frames or buttons
-            for _, descendant in ipairs(gui:GetDescendants()) do
-                if descendant:IsA("GuiButton") or descendant:IsA("TextButton") or descendant:IsA("ImageButton") then
-                    local text = ""
-                    local name = descendant.Name:lower()
-                    
-                    -- Safely get text property
-                    local success, textValue = pcall(function()
-                        if descendant:IsA("TextButton") or descendant:IsA("TextLabel") then
-                            return descendant.Text
-                        elseif descendant:FindFirstChild("TextLabel") then
-                            return descendant.TextLabel.Text
-                        elseif descendant:FindFirstChild("Text") and descendant.Text:IsA("StringValue") then
-                            return descendant.Text.Value
-                        else
-                            return ""
+            -- Recursively search for gift buttons
+            local function searchForGiftButton(parent)
+                for _, child in ipairs(parent:GetDescendants()) do
+                    if child:IsA("GuiButton") or child:IsA("TextButton") or child:IsA("ImageButton") then
+                        local text = child.Text and child.Text:lower() or ""
+                        local name = child.Name:lower()
+                        
+                        if text:find("gift") or text:find("trade") or text:find("give") or
+                           name:find("gift") or name:find("trade") or name:find("give") then
+                            table.insert(giftButtons, child)
+                            print(`🎁 Found potential gift button: {child.Name} in {gui.Name}`)
                         end
-                    end)
-                    
-                    if success then
-                        text = tostring(textValue):lower()
                     end
-                    
-                    -- Check for gift-related keywords
-                    if text:find("gift") or text:find("trade") or text:find("give") or text:find("send") or
-                       name:find("gift") or name:find("trade") or name:find("give") or name:find("send") then
-                        print(`🎁 Found gift button: {descendant.Name} - "{text}" in {gui.Name}`)
-                        return descendant
-                    end
-                    
-                    -- Log all buttons for debugging
-                    print(`🔍 Button found: {descendant.Name} ({descendant.ClassName}) - Text: "{text}"`)
                 end
+            end
+            
+            searchForGiftButton(gui)
+            
+            if #giftButtons > 0 then
+                return giftButtons
             end
         end
     end
@@ -435,153 +401,123 @@ local function FindGiftButton(targetPlayer)
     return nil
 end
 
-local function FindProximityPrompts()
-    print("🔍 Scanning for ProximityPrompts...")
+local function FindProximityPrompts(targetPlayer)
+    -- Look for ProximityPrompts near the target player
+    if not targetPlayer.Character then return nil end
     
-    local character = LocalPlayer.Character
-    if not character or not character:FindFirstChild("HumanoidRootPart") then 
-        return nil 
+    local prompts = {}
+    
+    -- Search in target's character
+    for _, descendant in ipairs(targetPlayer.Character:GetDescendants()) do
+        if descendant:IsA("ProximityPrompt") then
+            local actionText = descendant.ActionText:lower()
+            if actionText:find("gift") or actionText:find("trade") or actionText:find("give") then
+                table.insert(prompts, descendant)
+                print(`🎯 Found gift ProximityPrompt: {descendant.ActionText}`)
+            end
+        end
     end
     
-    local playerPos = character.HumanoidRootPart.Position
-    local foundPrompts = {}
-    
-    -- Search entire workspace for proximity prompts
-    for _, descendant in ipairs(workspace:GetDescendants()) do
-        if descendant:IsA("ProximityPrompt") and descendant.Enabled then
-            -- Check if prompt has gift-related action text
-            local actionText = tostring(descendant.ActionText):lower()
-            
-            if actionText:find("gift") or actionText:find("trade") or actionText:find("give") or 
-               actionText:find("send") or actionText:find("present") then
-                
-                -- Check distance
+    -- Also check nearby workspace for gift-related prompts
+    local character = LocalPlayer.Character
+    if character and character:FindFirstChild("HumanoidRootPart") then
+        local playerPos = character.HumanoidRootPart.Position
+        
+        for _, descendant in ipairs(workspace:GetDescendants()) do
+            if descendant:IsA("ProximityPrompt") then
                 local promptParent = descendant.Parent
                 if promptParent and promptParent:FindFirstChild("HumanoidRootPart") then
                     local distance = (playerPos - promptParent.HumanoidRootPart.Position).Magnitude
-                    if distance <= 15 then
-                        table.insert(foundPrompts, {
-                            prompt = descendant,
-                            distance = distance,
-                            parent = promptParent.Name
-                        })
-                        print(`🎯 Found gift prompt: "{descendant.ActionText}" on {promptParent.Name} ({math.floor(distance)} studs)`)
+                    if distance <= 15 then -- Within reasonable range
+                        local actionText = descendant.ActionText:lower()
+                        if actionText:find("gift") or actionText:find("trade") or actionText:find("give") then
+                            table.insert(prompts, descendant)
+                            print(`🎯 Found nearby gift ProximityPrompt: {descendant.ActionText}`)
+                        end
                     end
                 end
             end
         end
     end
     
-    return #foundPrompts > 0 and foundPrompts or nil
+    return #prompts > 0 and prompts or nil
 end
 
 local function TriggerMobileGift(targetPlayer, itemName)
-    print(`📱 Starting mobile gift process: {itemName} → {targetPlayer.Name}`)
+    print(`📱 Attempting mobile gift: {itemName} → {targetPlayer.Name}`)
     
-    -- Ensure we're close to target
-    local character = LocalPlayer.Character
-    if not character or not character:FindFirstChild("HumanoidRootPart") then
-        return false, "No character"
-    end
-    
-    if not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        return false, "Target has no character"
-    end
-    
-    local distance = (character.HumanoidRootPart.Position - targetPlayer.Character.HumanoidRootPart.Position).Magnitude
-    print(`📏 Distance to target: {math.floor(distance)} studs`)
-    
-    if distance > 10 then
-        return false, "Too far from target"
-    end
-    
-    -- Method 1: Try ProximityPrompts
-    print("🎯 Method 1: Searching for ProximityPrompts...")
-    local prompts = FindProximityPrompts()
+    -- Method 1: Try ProximityPrompts (most common for mobile)
+    local prompts = FindProximityPrompts(targetPlayer)
     if prompts then
-        -- Try closest prompt first
-        table.sort(prompts, function(a, b) return a.distance < b.distance end)
-        
-        for _, promptData in ipairs(prompts) do
-            print(`🎯 Triggering ProximityPrompt: "{promptData.prompt.ActionText}"`)
-            
+        for _, prompt in ipairs(prompts) do
+            print(`🎯 Triggering ProximityPrompt: {prompt.ActionText}`)
             local success, err = pcall(function()
-                fireproximityprompt(promptData.prompt)
+                fireproximityprompt(prompt)
             end)
-            
             if success then
-                print("✅ ProximityPrompt triggered successfully!")
-                wait(1) -- Give time for UI to respond
-                return true, "ProximityPrompt method successful"
+                print("✅ ProximityPrompt triggered successfully")
+                wait(0.5) -- Give time for UI to appear
+                return true
             else
                 warn(`❌ ProximityPrompt failed: {err}`)
             end
         end
-    else
-        print("❌ No gift-related ProximityPrompts found")
     end
     
     -- Method 2: Try UI buttons
-    print("🖱️ Method 2: Searching for UI buttons...")
-    local giftButton = FindGiftButton(targetPlayer)
-    if giftButton then
-        print(`🖱️ Attempting to click: {giftButton.Name}`)
-        
-        local success, err = pcall(function()
-            -- Multiple click methods
-            if giftButton.MouseButton1Click then
-                giftButton.MouseButton1Click:Fire()
-            end
-            
-            -- Try connection firing
-            for _, connection in pairs(getconnections(giftButton.MouseButton1Click or giftButton.Activated)) do
-                if connection and connection.Function then
+    local giftButtons = FindGiftButton(targetPlayer)
+    if giftButtons then
+        for _, button in ipairs(giftButtons) do
+            print(`🖱️ Clicking gift button: {button.Name}`)
+            local success, err = pcall(function()
+                -- Simulate button click
+                for _, connection in pairs(getconnections(button.MouseButton1Click)) do
                     connection:Fire()
                 end
-            end
-            
-            -- Try direct activation
-            if giftButton.Activated then
-                giftButton.Activated:Fire()
-            end
-        end)
-        
-        if success then
-            print("✅ Gift button clicked successfully!")
-            wait(1)
-            return true, "UI button method successful"
-        else
-            warn(`❌ Button click failed: {err}`)
-        end
-    else
-        print("❌ No gift-related UI buttons found")
-    end
-    
-    -- Method 3: Look for player-specific interactions
-    print("👤 Method 3: Looking for player interaction...")
-    
-    -- Try clicking on the player's character
-    if targetPlayer.Character then
-        local humanoid = targetPlayer.Character:FindFirstChild("Humanoid")
-        local clickDetector = targetPlayer.Character:FindFirstChildOfClass("ClickDetector")
-        
-        if clickDetector then
-            print("�️ Found ClickDetector on target player")
-            local success, err = pcall(function()
-                fireclickdetector(clickDetector)
+                
+                -- Alternative: trigger button directly
+                if button.MouseButton1Click then
+                    button.MouseButton1Click:Fire()
+                end
             end)
             if success then
-                print("✅ ClickDetector triggered!")
-                wait(1)
-                return true, "ClickDetector method successful"
+                print("✅ Gift button clicked successfully")
+                wait(0.5)
+                return true
             else
-                warn(`❌ ClickDetector failed: {err}`)
+                warn(`❌ Button click failed: {err}`)
             end
         end
     end
     
-    print("❌ All mobile gift methods failed")
-    return false, "No working mobile gift method found"
+    -- Method 3: Try remote events (fallback)
+    local gameEvents = GetGameEvents()
+    if gameEvents and type(gameEvents) == "userdata" then
+        local giftEvents = {"Gift_RE", "SendGift", "GiftPlayer", "TradeItem", "Gift", "PlayerGift"}
+        
+        for _, eventName in ipairs(giftEvents) do
+            local event = gameEvents:FindFirstChild(eventName)
+            if event and event:IsA("RemoteEvent") then
+                print(`📡 Trying RemoteEvent: {eventName}`)
+                local success, err = pcall(function()
+                    -- Try different parameter combinations
+                    event:FireServer(itemName, targetPlayer)
+                    wait(0.1)
+                    event:FireServer(targetPlayer, itemName)
+                    wait(0.1)
+                    event:FireServer(targetPlayer.UserId, itemName)
+                end)
+                if success then
+                    print(`✅ RemoteEvent {eventName} triggered`)
+                    return true
+                else
+                    warn(`❌ RemoteEvent {eventName} failed: {err}`)
+                end
+            end
+        end
+    end
+    
+    return false
 end
 
 local function AutoEquipItem(ItemName)
@@ -609,82 +545,55 @@ local function AutoEquipItem(ItemName)
 end
 
 local function SendGift(ItemName, TargetName)
-    print(`🎁 SendGift called: {ItemName} → {TargetName}`)
-    
     local Character = LocalPlayer.Character
-    if not Character then 
-        print("❌ No character found")
-        return false, "No character" 
-    end
+    if not Character then return false, "No character" end
     
     local TargetPlayer = game.Players:FindFirstChild(TargetName)
-    if not TargetPlayer then 
-        print(`❌ Target player {TargetName} not found`)
-        return false, "Target player not found" 
-    end
+    if not TargetPlayer then return false, "Target player not found" end
+    
+    print(`🎁 Attempting to gift {ItemName} to {TargetName}`)
     
     -- Auto-equip the item first
-    print(`� Attempting to equip: {ItemName}`)
-    local equipSuccess = AutoEquipItem(ItemName)
-    if not equipSuccess then
-        print(`❌ Could not equip item: {ItemName}`)
+    if not AutoEquipItem(ItemName) then
         return false, "Could not equip item"
     end
-    print("✅ Item equipped successfully")
     
     -- Mobile-optimized gifting (no E key required)
-    print("📱 Trying mobile gift methods...")
-    local mobileGiftSuccess, mobileMessage = TriggerMobileGift(TargetPlayer, ItemName)
-    
+    local mobileGiftSuccess = TriggerMobileGift(TargetPlayer, ItemName)
     if mobileGiftSuccess then
-        print(`✅ Mobile gift successful: {mobileMessage}`)
-        return true, mobileMessage
-    else
-        print(`❌ Mobile gift failed: {mobileMessage}`)
+        print("✅ Mobile gift method successful")
+        return true, "Mobile gift completed"
     end
     
-    print("📡 Trying RemoteEvent fallbacks...")
-    -- Try game events as final fallback
-    local gameEvents = GetGameEvents()
-    if gameEvents and type(gameEvents) == "userdata" then
-        local giftEventNames = {
-            "Gift_RE", "SendGift", "GiftPlayer", "TradeItem", "Gift", 
-            "PlayerGift", "GiveItem", "TransferItem", "ItemGift"
-        }
-        
-        for _, eventName in ipairs(giftEventNames) do
-            local event = gameEvents:FindFirstChild(eventName)
-            if event and event:IsA("RemoteEvent") then
-                print(`📡 Trying RemoteEvent: {eventName}`)
-                
-                -- Try multiple parameter combinations
-                local paramCombinations = {
-                    {ItemName, TargetPlayer},
-                    {TargetPlayer, ItemName},
-                    {ItemName, TargetPlayer.UserId},
-                    {TargetPlayer.UserId, ItemName},
-                    {ItemName, TargetName},
-                    {TargetName, ItemName}
-                }
-                
-                for i, params in ipairs(paramCombinations) do
-                    local success, err = pcall(function()
-                        event:FireServer(unpack(params))
-                    end)
-                    
-                    if success then
-                        print(`✅ RemoteEvent {eventName} successful with params {i}`)
-                        return true, `RemoteEvent {eventName} successful`
-                    else
-                        print(`⚠️ RemoteEvent {eventName} params {i} failed: {err}`)
-                    end
-                end
-            end
-        end
+    -- Fallback: Try traditional hold-E simulation for desktop users
+    print("📱 Mobile methods failed, trying desktop fallback...")
+    
+    -- Check if we're close enough
+    local maxDist = (MaxDistance and MaxDistance.Value) or MaxDistanceValue or 10
+    local Distance = (Character.HumanoidRootPart.Position - TargetPlayer.Character.HumanoidRootPart.Position).Magnitude
+    
+    if Distance > maxDist then
+        return false, "Too far from target for desktop fallback"
     end
     
-    print("❌ All gift methods failed")
-    return false, "All gift methods failed"
+    -- Look at the target player
+    local success, err = pcall(function()
+        Character.HumanoidRootPart.CFrame = CFrame.lookAt(
+            Character.HumanoidRootPart.Position, 
+            TargetPlayer.Character.HumanoidRootPart.Position
+        )
+    end)
+    
+    if not success then
+        return false, "Could not look at target: " .. tostring(err)
+    end
+    
+    -- Wait for hold duration
+    local holdTime = (HoldDuration and HoldDuration.Value) or HoldDurationValue or 1.2
+    wait(holdTime)
+    
+    print("✅ Desktop fallback simulation completed")
+    return true, "Desktop fallback completed"
 end
 
 local function CheckGiftAcceptance(GiftId)
@@ -699,7 +608,7 @@ local function ProcessGift(ItemName, TargetName)
     local LastGift = GiftState.LastGiftTime[TargetName] or 0
     
     if Now - LastGift < GiftConfig.Cooldown then
-    SetGiftStatus(`Cooldown: {TargetName}`)
+        GiftStatus.Text = `Cooldown: {TargetName}`
         return false
     end
     
@@ -714,14 +623,14 @@ local function ProcessGift(ItemName, TargetName)
             Retries = 0
         }
         
-    SetGiftStatus(`Auto-Sent: {ItemName} → {TargetName}`)
+        GiftStatus.Text = `Auto-Sent: {ItemName} → {TargetName}`
         
         -- Check acceptance in background
         coroutine.wrap(function()
             local Accepted = CheckGiftAcceptance(GiftId)
             if Accepted then
                 GiftState.AcceptedGifts[GiftId] = GiftState.PendingGifts[GiftId]
-                SetGiftStatus(`✅ Accepted: {ItemName} by {TargetName}`)
+                GiftStatus.Text = `✅ Accepted: {ItemName} by {TargetName}`
             else
                 GiftState.RejectedGifts[GiftId] = GiftState.PendingGifts[GiftId]
                 if AutoRetry.Value and GiftState.PendingGifts[GiftId].Retries < GiftRetries.Value then
@@ -731,9 +640,9 @@ local function ProcessGift(ItemName, TargetName)
                         Item = ItemName,
                         Target = TargetName
                     }
-                    SetGiftStatus(`🔄 Queued retry: {ItemName} → {TargetName}`)
+                    GiftStatus.Text = `🔄 Queued retry: {ItemName} → {TargetName}`
                 else
-                    SetGiftStatus(`❌ Rejected: {ItemName} by {TargetName}`)
+                    GiftStatus.Text = `❌ Rejected: {ItemName} by {TargetName}`
                 end
             end
             GiftState.PendingGifts[GiftId] = nil
@@ -741,28 +650,26 @@ local function ProcessGift(ItemName, TargetName)
         
         return true
     else
-    SetGiftStatus(`❌ Failed: {Message or "Unknown error"}`)
+        GiftStatus.Text = `❌ Failed: {Message or "Unknown error"}`
         return false
     end
 end
 
 --// Auto Gift Loop
 local function AutoGiftLoop()
-    -- Check both UI state and fallback variables
-    local isAutoGiftEnabled = (AutoGift and AutoGift.Value) or AutoGiftEnabled
-    if not isAutoGiftEnabled then return end
+    if not AutoGift or not AutoGift.Value then return end
     
     local ItemName = SelectedItem and SelectedItem.Selected or SelectedItemName
     local TargetName = TargetPlayer and TargetPlayer.Selected or SelectedTargetName
     
     if not ItemName or ItemName == "" then
-    SetGiftStatus("No item selected")
+        if GiftStatus then GiftStatus.Text = "No item selected" end
         return
     end
     
     local Items = GetGiftableItems()
     if not Items[ItemName] then
-    SetGiftStatus("Item not found")
+        if GiftStatus then GiftStatus.Text = "Item not found" end
         return
     end
     
@@ -793,10 +700,10 @@ local function AutoGiftLoop()
                     local Success, Message = TeleportToPlayer(Target.Name, teleportOffset)
                     
                     if Success then
-                        SetGiftStatus(`📍 {Message}`)
+                        if GiftStatus then GiftStatus.Text = `📍 {Message}` end
                         wait(0.5) -- Brief delay after teleporting
                     else
-                        SetGiftStatus(`❌ Teleport failed: {Message}`)
+                        if GiftStatus then GiftStatus.Text = `❌ Teleport failed: {Message}` end
                         return
                     end
                 end
@@ -807,7 +714,7 @@ local function AutoGiftLoop()
     end
     
     if not Target then
-    SetGiftStatus("🔍 No target found")
+        if GiftStatus then GiftStatus.Text = "🔍 No target found" end
         return
     end
     
@@ -817,97 +724,92 @@ end
 --// Fully Automated Gifting Loop (removes manual hold-E requirement)
 local function HandleAutomatedGifting()
     -- This function now handles automated gifting without manual input
-    local success, err = pcall(function()
-        -- Check both UI state and fallback variables
-        local isAutoGiftEnabled = (AutoGift and AutoGift.Value) or AutoGiftEnabled
-        if not isAutoGiftEnabled then return end
-        
-        local ItemName = SelectedItem and SelectedItem.Selected or SelectedItemName
-        if not ItemName or ItemName == "" then return end
-        
-        local TargetName = TargetPlayer and TargetPlayer.Selected or SelectedTargetName
-        if not TargetName or TargetName == "" or TargetName == "Auto" then
-            -- Auto-find nearby target
-            local Target = FindTargetPlayer()
-            if Target then
-                TargetName = Target.Name
-            else
-                return
-            end
+    if not AutoGift or not AutoGift.Value then return end
+    
+    local ItemName = SelectedItem and SelectedItem.Selected or SelectedItemName
+    if not ItemName or ItemName == "" then return end
+    
+    local TargetName = TargetPlayer and TargetPlayer.Selected or SelectedTargetName
+    if not TargetName or TargetName == "" or TargetName == "Auto" then
+        -- Auto-find nearby target
+        local Target = FindTargetPlayer()
+        if Target then
+            TargetName = Target.Name
+        else
+            return
         end
+    end
+    
+    local Character = LocalPlayer.Character
+    local TargetPlayerObj = game.Players:FindFirstChild(TargetName)
+    
+    if not Character or not TargetPlayerObj then return end
+    if not Character:FindFirstChild("HumanoidRootPart") then return end
+    if not TargetPlayerObj.Character or not TargetPlayerObj.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    -- Check distance and auto-teleport if needed
+    local Distance = (Character.HumanoidRootPart.Position - TargetPlayerObj.Character.HumanoidRootPart.Position).Magnitude
+    local shouldTeleport = (AutoTeleport and AutoTeleport.Value) or AutoTeleportEnabled
+    local teleportThreshold = (TeleportDistance and TeleportDistance.Value) or TeleportDistanceValue or 15
+    
+    if shouldTeleport and Distance > teleportThreshold then
+        print(`🚀 Auto-teleporting to {TargetName} (distance: {math.floor(Distance)})`)
         
-        local Character = LocalPlayer.Character
-        local TargetPlayerObj = game.Players:FindFirstChild(TargetName)
+        local teleportOffset = (TeleportOffset and TeleportOffset.Value) or TeleportOffsetValue or 3
+        local Success, Message = TeleportToPlayer(TargetName, teleportOffset)
         
-        if not Character or not TargetPlayerObj then return end
-        if not Character:FindFirstChild("HumanoidRootPart") then return end
-        if not TargetPlayerObj.Character or not TargetPlayerObj.Character:FindFirstChild("HumanoidRootPart") then return end
-        
-        -- Check distance and auto-teleport if enabled
-        local Distance = (Character.HumanoidRootPart.Position - TargetPlayerObj.Character.HumanoidRootPart.Position).Magnitude
-        local shouldTeleport = (AutoTeleport and AutoTeleport.Value) or AutoTeleportEnabled
-        local teleportThreshold = (TeleportDistance and TeleportDistance.Value) or TeleportDistanceValue or 15
-        
-        if shouldTeleport and Distance > teleportThreshold then
-            print(`🚀 Auto-teleporting to {TargetName} (distance: {math.floor(Distance)})`)
-            
-            local teleportOffset = (TeleportOffset and TeleportOffset.Value) or TeleportOffsetValue or 3
-            local TeleportSuccess, Message = TeleportToPlayer(TargetName, teleportOffset)
-            
-            if TeleportSuccess then
-                SetGiftStatus(`📍 Auto-teleported to {TargetName}`)
-                wait(0.5)
-            else
-                warn(`❌ Auto-teleport failed: {Message}`)
-                return
-            end
+        if Success then
+            if GiftStatus then GiftStatus.Text = `📍 Auto-teleported to {TargetName}` end
+            wait(0.5)
+        else
+            warn(`❌ Auto-teleport failed: {Message}`)
+            return
         end
+    end
+    
+    -- Check if close enough after potential teleport
+    Distance = (Character.HumanoidRootPart.Position - TargetPlayerObj.Character.HumanoidRootPart.Position).Magnitude
+    local maxDist = (MaxDistance and MaxDistance.Value) or MaxDistanceValue or 10
+    
+    if Distance <= maxDist then
+        -- Check cooldown
+        local Now = tick()
+        local LastGift = GiftState.LastGiftTime[TargetName] or 0
         
-        -- Check if close enough after potential teleport
-        Distance = (Character.HumanoidRootPart.Position - TargetPlayerObj.Character.HumanoidRootPart.Position).Magnitude
-        local maxDist = (MaxDistance and MaxDistance.Value) or MaxDistanceValue or 10
-        
-        if Distance <= maxDist then
-            -- Check cooldown
-            local Now = tick()
-            local LastGift = GiftState.LastGiftTime[TargetName] or 0
+        if Now - LastGift >= GiftConfig.Cooldown then
+            print(`🎁 Attempting automated gift: {ItemName} → {TargetName}`)
             
-            if Now - LastGift >= GiftConfig.Cooldown then
-                print(`🎁 Attempting automated gift: {ItemName} → {TargetName}`)
-                
-                -- Update status safely
-                if GiftStatus then 
-                    SetGiftStatus(`🎁 Auto-gifting {ItemName} to {TargetName}...`)
-                end
+            -- Auto-equip and simulate automated hold-E
+            if AutoEquipItem(ItemName) then
+                if GiftStatus then GiftStatus.Text = `🎁 Auto-gifting {ItemName} to {TargetName}...` end
                 
                 -- Look at target
-                local lookSuccess, lookErr = pcall(function()
+                local success, err = pcall(function()
                     Character.HumanoidRootPart.CFrame = CFrame.lookAt(
                         Character.HumanoidRootPart.Position, 
                         TargetPlayerObj.Character.HumanoidRootPart.Position
                     )
                 end)
                 
-                if lookSuccess then
-                    -- Small delay before gifting
-                    wait(0.2)
+                if success then
+                    -- Simulate the hold duration
+                    local holdTime = (HoldDuration and HoldDuration.Value) or HoldDurationValue or 1.2
+                    wait(holdTime)
                     
                     -- Process the actual gift
                     ProcessGift(ItemName, TargetName)
                 else
-                    warn(`❌ Failed to look at target: {lookErr}`)
+                    warn(`❌ Failed to look at target: {err}`)
                 end
             else
-                local timeLeft = GiftConfig.Cooldown - (Now - LastGift)
-                print(`⏰ Gift cooldown: {math.ceil(timeLeft)}s remaining`)
+                warn(`❌ Failed to equip item: {ItemName}`)
             end
         else
-            print(`📏 Too far from {TargetName}: {math.floor(Distance)} studs (max: {maxDist})`)
+            local timeLeft = GiftConfig.Cooldown - (Now - LastGift)
+            print(`⏰ Gift cooldown: {math.ceil(timeLeft)}s remaining`)
         end
-    end)
-    
-    if not success then
-        warn(`❌ Error in HandleAutomatedGifting: {err}`)
+    else
+        print(`📏 Too far from {TargetName}: {math.floor(Distance)} studs (max: {maxDist})`)
     end
 end
 
@@ -925,7 +827,7 @@ UserInputService.InputBegan:Connect(function(Input, GameProcessed)
         
         -- Manual gift trigger
         ProcessGift(ItemName, Target.Name)
-    SetGiftStatus(`🎮 Manual gift: {ItemName} → {Target.Name}`)
+        GiftStatus.Text = `🎮 Manual gift: {ItemName} → {Target.Name}`
     end
 end)
 
@@ -1064,36 +966,30 @@ print("✅ UI Elements created")
 local Commands = {
     autogift = function(value)
         if value == "true" or value == "1" or value == "on" then
-            if AutoGift then AutoGift.Value = true end
-            AutoGiftEnabled = true
+            AutoGift.Value = true
             print("✅ Auto-Gift enabled")
         else
-            if AutoGift then AutoGift.Value = false end
-            AutoGiftEnabled = false
+            AutoGift.Value = false
             print("❌ Auto-Gift disabled")
         end
     end,
     
     target = function(playerName)
-        if TargetPlayer then TargetPlayer.Selected = playerName end
-        SelectedTargetName = playerName
+        TargetPlayer.Selected = playerName
         print("🎯 Target set to: " .. playerName)
     end,
     
     item = function(itemName)
-        if SelectedItem then SelectedItem.Selected = itemName end
-        SelectedItemName = itemName
+        SelectedItem.Selected = itemName
         print("🎁 Item set to: " .. itemName)
     end,
     
     teleport = function(value)
         if value == "true" or value == "1" or value == "on" then
-            if AutoTeleport then AutoTeleport.Value = true end
-            AutoTeleportEnabled = true
+            AutoTeleport.Value = true
             print("✅ Auto-Teleport enabled")
         else
-            if AutoTeleport then AutoTeleport.Value = false end
-            AutoTeleportEnabled = false
+            AutoTeleport.Value = false
             print("❌ Auto-Teleport disabled")
         end
     end,
@@ -1103,35 +999,6 @@ local Commands = {
             print(`🎁 Manual gift: {itemName} → {targetName}`)
             ProcessGift(itemName, targetName)
         end
-    end,
-    
-    status = function()
-        print("📊 AUTOMATION STATUS:")
-        local autoGiftStatus = (AutoGift and AutoGift.Value) or AutoGiftEnabled
-        local autoTeleportStatus = (AutoTeleport and AutoTeleport.Value) or AutoTeleportEnabled
-        local currentTarget = (TargetPlayer and TargetPlayer.Selected) or SelectedTargetName
-        local currentItem = (SelectedItem and SelectedItem.Selected) or SelectedItemName
-        
-        print(`   🎁 Auto-Gift: {autoGiftStatus and "ENABLED" or "DISABLED"}`)
-        print(`   📍 Auto-Teleport: {autoTeleportStatus and "ENABLED" or "DISABLED"}`)
-        print(`   🎯 Target: {currentTarget or "None"}`)
-        print(`   🎒 Item: {currentItem or "None"}`)
-    end,
-    
-    stop = function()
-        if AutoGift then AutoGift.Value = false end
-        if AutoTeleport then AutoTeleport.Value = false end
-        AutoGiftEnabled = false
-        AutoTeleportEnabled = false
-        print("🛑 ALL AUTOMATION STOPPED")
-    end,
-    
-    start = function()
-        if AutoGift then AutoGift.Value = true end
-        if AutoTeleport then AutoTeleport.Value = true end
-        AutoGiftEnabled = true
-        AutoTeleportEnabled = true
-        print("🚀 ALL AUTOMATION STARTED")
     end
 }
 
@@ -1159,36 +1026,6 @@ _G.EnableAutoGift = function(targetName, itemName)
     print("🎁 Auto-Gift system activated!")
 end
 
--- Quick disable function
-_G.DisableAutoGift = function()
-    print("🛑 Disabling Auto-Gift system...")
-    Commands.stop()
-    print("❌ Auto-Gift system deactivated!")
-end
-
--- Status check function
-_G.CheckStatus = function()
-    Commands.status()
-end
-
--- Quick controls
-_G.StartGifting = function()
-    Commands.start()
-end
-
-_G.StopGifting = function()
-    Commands.stop()
-end
-
--- Individual toggles
-_G.ToggleAutoGift = function(enabled)
-    Commands.autogift(enabled and "true" or "false")
-end
-
-_G.ToggleAutoTeleport = function(enabled)
-    Commands.teleport(enabled and "true" or "false")
-end
-
 -- Quick teleport function
 _G.TeleportTo = function(playerName, distance)
     local dist = distance or 3
@@ -1201,63 +1038,29 @@ _G.TeleportTo = function(playerName, distance)
     end
 end
 
--- Enhanced mobile gift testing function
+-- Mobile gift testing function
 _G.TestMobileGift = function(playerName, itemName)
-    print("📱 =================================")
-    print("📱 MOBILE GIFT TEST STARTING...")
-    print("📱 =================================")
+    print("📱 Testing mobile gift system...")
     
     local targetPlayer = game.Players:FindFirstChild(playerName or "")
     if not targetPlayer then
         print("❌ Please specify a valid player name")
-        print("📋 Available players:")
-        for _, player in pairs(game.Players:GetPlayers()) do
-            if player ~= LocalPlayer then
-                print("   • " .. player.Name)
-            end
-        end
         return
     end
     
-    local testItem = itemName or "Carrot"
+    local testItem = itemName or "TestItem"
     print(`🎯 Target: {targetPlayer.Name}`)
     print(`🎁 Item: {testItem}`)
     
-    -- Step 1: Check distance
-    local character = LocalPlayer.Character
-    if character and character:FindFirstChild("HumanoidRootPart") and 
-       targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        local distance = (character.HumanoidRootPart.Position - targetPlayer.Character.HumanoidRootPart.Position).Magnitude
-        print(`📏 Distance: {math.floor(distance)} studs`)
-        
-        if distance > 10 then
-            print("⚠️ Too far! Teleporting closer...")
-            _G.TeleportTo(targetPlayer.Name, 3)
-            wait(1)
-        end
-    end
+    -- Test mobile gift methods
+    local success = TriggerMobileGift(targetPlayer, testItem)
     
-    -- Step 2: Equip item
-    print("🎒 Equipping item...")
-    local equipSuccess = AutoEquipItem(testItem)
-    print(`🎒 Equipment result: {equipSuccess}`)
-    
-    -- Step 3: Test mobile gift methods
-    print("📱 Testing mobile gift methods...")
-    local success, message = TriggerMobileGift(targetPlayer, testItem)
-    
-    print("📱 =================================")
     if success then
-        print(`✅ MOBILE GIFT TEST SUCCESSFUL!`)
-        print(`✅ Method: {message}`)
+        print("✅ Mobile gift test successful!")
     else
-        print(`❌ MOBILE GIFT TEST FAILED`)
-        print(`❌ Reason: {message}`)
-        print("� Try manually getting closer or checking for gift interfaces")
+        print("❌ Mobile gift test failed - may need manual inspection")
+        print("🔍 Try checking PlayerGui for gift-related interfaces")
     end
-    print("📱 =================================")
-    
-    return success, message
 end
 
 -- Scan for gift UI elements
@@ -1273,36 +1076,15 @@ _G.ScanGiftUI = function()
             
             for _, descendant in ipairs(gui:GetDescendants()) do
                 if descendant:IsA("GuiButton") or descendant:IsA("TextButton") or descendant:IsA("ImageButton") then
-                    local text = ""
-                    if descendant:IsA("TextButton") or descendant:IsA("TextLabel") then
-                        local ok, val = pcall(function() return descendant.Text end)
-                        if ok then text = (val or ""):lower() end
-                    else
-                        local label = descendant:FindFirstChildWhichIsA("TextLabel", true)
-                        if label then
-                            local ok2, val2 = pcall(function() return label.Text end)
-                            if ok2 then text = (val2 or ""):lower() end
-                        end
-                    end
+                    local text = descendant.Text and descendant.Text:lower() or ""
                     local name = descendant.Name:lower()
                     
                     if text:find("gift") or text:find("trade") or text:find("give") or
                        name:find("gift") or name:find("trade") or name:find("give") then
-                        local displayText = "No text"
-                        if descendant:IsA("TextButton") or descendant:IsA("TextLabel") then
-                            local ok3, val3 = pcall(function() return descendant.Text end)
-                            if ok3 then displayText = val3 or "" end
-                        else
-                            local label2 = descendant:FindFirstChildWhichIsA("TextLabel", true)
-                            if label2 then
-                                local ok4, val4 = pcall(function() return label2.Text end)
-                                if ok4 then displayText = val4 or "" end
-                            end
-                        end
                         table.insert(foundElements, {
                             gui = gui.Name,
                             element = descendant.Name,
-                            text = displayText,
+                            text = descendant.Text or "No text",
                             visible = descendant.Visible
                         })
                     end
@@ -1359,18 +1141,8 @@ _G.ScanProximityPrompts = function()
 end
 
 print("📋 Command system loaded!")
-print("💡 ACTIVATION & DEACTIVATION COMMANDS:")
-print("   _G.EnableAutoGift('PlayerName', 'ItemName')  -- Start everything")
-print("   _G.DisableAutoGift()                        -- Stop everything") 
-print("   _G.StartGifting()                           -- Resume automation")
-print("   _G.StopGifting()                            -- Pause automation")
-print("   _G.CheckStatus()                            -- Check current state")
-print("")
-print("💡 INDIVIDUAL TOGGLES:")
-print("   _G.ToggleAutoGift(true/false)               -- Toggle auto-gifting")
-print("   _G.ToggleAutoTeleport(true/false)           -- Toggle auto-teleport")
-print("")
-print("💡 OTHER COMMANDS:")
+print("💡 Usage examples:")
+print("   _G.EnableAutoGift('PlayerName', 'ItemName')")
 print("   _G.TeleportTo('PlayerName', 5)")  
 print("   _G.TestMobileGift('PlayerName', 'ItemName')")
 print("   _G.ScanGiftUI()  -- Find gift buttons")
@@ -1384,11 +1156,6 @@ print("🧪 Recommended mobile testing order:")
 print("   1. _G.TeleportTo('PlayerName', 3)")
 print("   2. _G.ScanProximityPrompts()")
 print("   3. _G.TestMobileGift('PlayerName', 'ItemName')")
-print("")
-print("🎮 QUICK CONTROL EXAMPLES:")
-print("   _G.EnableAutoGift('TWIST_X7', 'Carrot')     -- Start auto-gifting")
-print("   _G.CheckStatus()                            -- See what's running")
-print("   _G.DisableAutoGift()                        -- Stop everything")
 
 --// Start Services
 print("🔧 Starting services...")

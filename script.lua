@@ -206,29 +206,55 @@ end
 
 --// Utility Functions
 local function TeleportToPlayer(PlayerName, Distance)
+    print(`📍 Attempting to teleport to {PlayerName}`)
+    
     local Character = LocalPlayer.Character
     local TargetPlayer = game.Players:FindFirstChild(PlayerName)
     
     if not Character or not Character:FindFirstChild("HumanoidRootPart") then 
+        warn("❌ No character or HumanoidRootPart")
         return false, "No character" 
     end
     
-    if not TargetPlayer or not TargetPlayer.Character or not TargetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        return false, "Target not found"
+    if not TargetPlayer then
+        warn(`❌ Target player {PlayerName} not found`)
+        return false, "Target player not found"
+    end
+    
+    if not TargetPlayer.Character or not TargetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        warn(`❌ Target {PlayerName} has no character/HumanoidRootPart`)
+        return false, "Target character not found"
     end
     
     local MyRoot = Character.HumanoidRootPart
     local TargetRoot = TargetPlayer.Character.HumanoidRootPart
     
+    print(`📏 Current distance: {math.floor((MyRoot.Position - TargetRoot.Position).Magnitude)} studs`)
+    
     -- Calculate position behind target (safer for gifting)
     local TargetCFrame = TargetRoot.CFrame
-    local Offset = TargetCFrame.LookVector * -(Distance or 3) -- Behind the target
+    local SafeDistance = Distance or 3
+    local Offset = TargetCFrame.LookVector * -SafeDistance -- Behind the target
     local TeleportPosition = TargetRoot.Position + Offset
     
-    -- Teleport with slight Y offset to avoid getting stuck
-    MyRoot.CFrame = CFrame.new(TeleportPosition + Vector3.new(0, 2, 0))
+    -- Add Y offset to avoid getting stuck in ground
+    TeleportPosition = TeleportPosition + Vector3.new(0, 2, 0)
     
-    return true, "Teleported to " .. PlayerName
+    -- Perform teleportation
+    local success, err = pcall(function()
+        MyRoot.CFrame = CFrame.new(TeleportPosition, TargetRoot.Position)
+    end)
+    
+    if success then
+        print(`✅ Successfully teleported to {PlayerName}`)
+        wait(0.1) -- Brief stabilization
+        local newDistance = (MyRoot.Position - TargetRoot.Position).Magnitude
+        print(`📏 New distance: {math.floor(newDistance)} studs`)
+        return true, "Teleported to " .. PlayerName
+    else
+        warn(`❌ Teleport failed: {err}`)
+        return false, "Teleport failed: " .. tostring(err)
+    end
 end
 
 local function GetAllPlayers()
@@ -487,19 +513,19 @@ end
 
 --// Auto Gift Loop
 local function AutoGiftLoop()
-    if not AutoGift.Value then return end
+    if not AutoGift or not AutoGift.Value then return end
     
-    local ItemName = SelectedItem.Selected
-    local TargetName = TargetPlayer.Selected
+    local ItemName = SelectedItem and SelectedItem.Selected or SelectedItemName
+    local TargetName = TargetPlayer and TargetPlayer.Selected or SelectedTargetName
     
     if not ItemName or ItemName == "" then
-        GiftStatus.Text = "No item selected"
+        if GiftStatus then GiftStatus.Text = "No item selected" end
         return
     end
     
     local Items = GetGiftableItems()
     if not Items[ItemName] then
-        GiftStatus.Text = "Item not found"
+        if GiftStatus then GiftStatus.Text = "Item not found" end
         return
     end
     
@@ -516,17 +542,24 @@ local function AutoGiftLoop()
         Target = game.Players:FindFirstChild(TargetName)
         
         -- Auto-teleport to specified player if enabled
-        if Target and AutoTeleport.Value then
+        local shouldTeleport = (AutoTeleport and AutoTeleport.Value) or AutoTeleportEnabled
+        if Target and shouldTeleport then
             local Character = LocalPlayer.Character
             if Character and Character:FindFirstChild("HumanoidRootPart") and Target.Character and Target.Character:FindFirstChild("HumanoidRootPart") then
                 local Distance = (Character.HumanoidRootPart.Position - Target.Character.HumanoidRootPart.Position).Magnitude
-                if Distance > TeleportDistance.Value then
-                    local Success, Message = TeleportToPlayer(Target.Name, TeleportOffset.Value)
+                local teleportThreshold = (TeleportDistance and TeleportDistance.Value) or TeleportDistanceValue or 15
+                
+                print(`📏 Distance to {Target.Name}: {math.floor(Distance)} studs (threshold: {teleportThreshold})`)
+                
+                if Distance > teleportThreshold then
+                    local teleportOffset = (TeleportOffset and TeleportOffset.Value) or TeleportOffsetValue or 3
+                    local Success, Message = TeleportToPlayer(Target.Name, teleportOffset)
+                    
                     if Success then
-                        GiftStatus.Text = `📍 {Message}`
+                        if GiftStatus then GiftStatus.Text = `📍 {Message}` end
                         wait(0.5) -- Brief delay after teleporting
                     else
-                        GiftStatus.Text = `❌ Teleport failed: {Message}`
+                        if GiftStatus then GiftStatus.Text = `❌ Teleport failed: {Message}` end
                         return
                     end
                 end
@@ -537,7 +570,7 @@ local function AutoGiftLoop()
     end
     
     if not Target then
-        GiftStatus.Text = "🔍 No target found"
+        if GiftStatus then GiftStatus.Text = "🔍 No target found" end
         return
     end
     
@@ -545,44 +578,14 @@ local function AutoGiftLoop()
 end
 
 --// Fully Automated Gifting Loop (removes manual hold-E requirement)
-local function AutoHoldELoop()
-    -- This replaces the manual hold-E mechanic with automated simulation
-    -- No longer needs user input - everything is automated
-    
-    if not AutoGift.Value then return end
-    
-    local ItemName = SelectedItem.Selected
-    local TargetName = TargetPlayer.Selected
-    
-    if not ItemName or ItemName == "" then return end
-    if not TargetName or TargetName == "" or TargetName == "Auto" then return end
-    
-    local Character = LocalPlayer.Character
-    local TargetPlayer = game.Players:FindFirstChild(TargetName)
-    
-    if not Character or not TargetPlayer then return end
-    if not Character:FindFirstChild("HumanoidRootPart") then return end
-    if not TargetPlayer.Character or not TargetPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
-    
-    -- Check if we're close enough for gifting
-    local Distance = (Character.HumanoidRootPart.Position - TargetPlayer.Character.HumanoidRootPart.Position).Magnitude
-    if Distance <= MaxDistance.Value then
-        -- Auto-equip and simulate hold-E
-        if AutoEquipItem(ItemName) then
-            SimulateHoldE(TargetPlayer, HoldDuration.Value)
-        end
-    end
-end
-
---// Hold-to-Gift Mechanics (Now Automated)
 local function HandleAutomatedGifting()
     -- This function now handles automated gifting without manual input
-    if not AutoGift.Value then return end
+    if not AutoGift or not AutoGift.Value then return end
     
-    local ItemName = SelectedItem.Selected
+    local ItemName = SelectedItem and SelectedItem.Selected or SelectedItemName
     if not ItemName or ItemName == "" then return end
     
-    local TargetName = TargetPlayer.Selected
+    local TargetName = TargetPlayer and TargetPlayer.Selected or SelectedTargetName
     if not TargetName or TargetName == "" or TargetName == "Auto" then
         -- Auto-find nearby target
         local Target = FindTargetPlayer()
@@ -594,50 +597,75 @@ local function HandleAutomatedGifting()
     end
     
     local Character = LocalPlayer.Character
-    local TargetPlayer = game.Players:FindFirstChild(TargetName)
+    local TargetPlayerObj = game.Players:FindFirstChild(TargetName)
     
-    if not Character or not TargetPlayer then return end
+    if not Character or not TargetPlayerObj then return end
     if not Character:FindFirstChild("HumanoidRootPart") then return end
-    if not TargetPlayer.Character or not TargetPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    if not TargetPlayerObj.Character or not TargetPlayerObj.Character:FindFirstChild("HumanoidRootPart") then return end
     
     -- Check distance and auto-teleport if needed
-    local Distance = (Character.HumanoidRootPart.Position - TargetPlayer.Character.HumanoidRootPart.Position).Magnitude
+    local Distance = (Character.HumanoidRootPart.Position - TargetPlayerObj.Character.HumanoidRootPart.Position).Magnitude
+    local shouldTeleport = (AutoTeleport and AutoTeleport.Value) or AutoTeleportEnabled
+    local teleportThreshold = (TeleportDistance and TeleportDistance.Value) or TeleportDistanceValue or 15
     
-    if AutoTeleport.Value and Distance > TeleportDistance.Value then
-        local Success, Message = TeleportToPlayer(TargetName, TeleportOffset.Value)
+    if shouldTeleport and Distance > teleportThreshold then
+        print(`🚀 Auto-teleporting to {TargetName} (distance: {math.floor(Distance)})`)
+        
+        local teleportOffset = (TeleportOffset and TeleportOffset.Value) or TeleportOffsetValue or 3
+        local Success, Message = TeleportToPlayer(TargetName, teleportOffset)
+        
         if Success then
-            GiftStatus.Text = `📍 Auto-teleported to {TargetName}`
+            if GiftStatus then GiftStatus.Text = `📍 Auto-teleported to {TargetName}` end
             wait(0.5)
         else
+            warn(`❌ Auto-teleport failed: {Message}`)
             return
         end
     end
     
     -- Check if close enough after potential teleport
-    Distance = (Character.HumanoidRootPart.Position - TargetPlayer.Character.HumanoidRootPart.Position).Magnitude
-    if Distance <= MaxDistance.Value then
+    Distance = (Character.HumanoidRootPart.Position - TargetPlayerObj.Character.HumanoidRootPart.Position).Magnitude
+    local maxDist = (MaxDistance and MaxDistance.Value) or MaxDistanceValue or 10
+    
+    if Distance <= maxDist then
         -- Check cooldown
         local Now = tick()
         local LastGift = GiftState.LastGiftTime[TargetName] or 0
         
         if Now - LastGift >= GiftConfig.Cooldown then
+            print(`🎁 Attempting automated gift: {ItemName} → {TargetName}`)
+            
             -- Auto-equip and simulate automated hold-E
             if AutoEquipItem(ItemName) then
-                GiftStatus.Text = `🎁 Auto-gifting {ItemName} to {TargetName}...`
+                if GiftStatus then GiftStatus.Text = `🎁 Auto-gifting {ItemName} to {TargetName}...` end
                 
                 -- Look at target
-                Character.HumanoidRootPart.CFrame = CFrame.lookAt(
-                    Character.HumanoidRootPart.Position, 
-                    TargetPlayer.Character.HumanoidRootPart.Position
-                )
+                local success, err = pcall(function()
+                    Character.HumanoidRootPart.CFrame = CFrame.lookAt(
+                        Character.HumanoidRootPart.Position, 
+                        TargetPlayerObj.Character.HumanoidRootPart.Position
+                    )
+                end)
                 
-                -- Simulate the hold duration
-                wait(HoldDuration.Value)
-                
-                -- Process the actual gift
-                ProcessGift(ItemName, TargetName)
+                if success then
+                    -- Simulate the hold duration
+                    local holdTime = (HoldDuration and HoldDuration.Value) or HoldDurationValue or 1.2
+                    wait(holdTime)
+                    
+                    -- Process the actual gift
+                    ProcessGift(ItemName, TargetName)
+                else
+                    warn(`❌ Failed to look at target: {err}`)
+                end
+            else
+                warn(`❌ Failed to equip item: {ItemName}`)
             end
+        else
+            local timeLeft = GiftConfig.Cooldown - (Now - LastGift)
+            print(`⏰ Gift cooldown: {math.ceil(timeLeft)}s remaining`)
         end
+    else
+        print(`📏 Too far from {TargetName}: {math.floor(Distance)} studs (max: {maxDist})`)
     end
 end
 
@@ -842,6 +870,7 @@ end
 
 -- Quick enable function
 _G.EnableAutoGift = function(targetName, itemName)
+    print("🚀 Enabling Auto-Gift system...")
     if targetName then
         Commands.target(targetName)
     end
@@ -850,14 +879,70 @@ _G.EnableAutoGift = function(targetName, itemName)
     end
     Commands.autogift("true")
     Commands.teleport("true")
-    print("🚀 Auto-Gift system activated!")
+    print("🎁 Auto-Gift system activated!")
+end
+
+-- Quick teleport function
+_G.TeleportTo = function(playerName, distance)
+    local dist = distance or 3
+    print(`📍 Teleporting to {playerName} (distance: {dist})`)
+    local success, message = TeleportToPlayer(playerName, dist)
+    if success then
+        print(`✅ {message}`)
+    else
+        print(`❌ {message}`)
+    end
+end
+
+-- Test teleport function
+_G.TestTeleport = function(playerName)
+    print("🧪 Testing teleportation system...")
+    
+    -- Check if player exists
+    local targetPlayer = game.Players:FindFirstChild(playerName or "")
+    if not targetPlayer then
+        print("❌ Please specify a valid player name")
+        print("📋 Available players:")
+        for _, player in pairs(game.Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                print("   • " .. player.Name)
+            end
+        end
+        return
+    end
+    
+    print(`🎯 Target: {targetPlayer.Name}`)
+    
+    -- Test teleport
+    _G.TeleportTo(targetPlayer.Name, 5)
+    
+    wait(1)
+    
+    -- Check result
+    local character = LocalPlayer.Character
+    if character and character:FindFirstChild("HumanoidRootPart") and 
+       targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        local distance = (character.HumanoidRootPart.Position - targetPlayer.Character.HumanoidRootPart.Position).Magnitude
+        print(`📏 Final distance: {math.floor(distance)} studs`)
+        
+        if distance <= 10 then
+            print("✅ Teleport test successful!")
+        else
+            print("⚠️ Teleport test inconclusive - may need adjustment")
+        end
+    end
 end
 
 print("📋 Command system loaded!")
 print("💡 Usage examples:")
 print("   _G.EnableAutoGift('PlayerName', 'ItemName')")
+print("   _G.TeleportTo('PlayerName', 5)")  
+print("   _G.TestTeleport('PlayerName')")
 print("   _G.AutoGiftCommand('autogift', 'true')")
 print("   _G.AutoGiftCommand('target', 'PlayerName')")
+print("")
+print("🧪 Test teleport first:")
+print("   _G.TestTeleport('PlayerName')")
 
 --// Start Services
 print("🔧 Starting services...")

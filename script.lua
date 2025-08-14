@@ -357,26 +357,167 @@ local function FindTargetPlayer()
     return BestPlayer
 end
 
---// Gift Functions
-local function SimulateHoldE(TargetPlayer, Duration)
-    -- Simulate the hold-E gifting mechanic automatically
-    local Character = LocalPlayer.Character
-    if not Character or not Character:FindFirstChild("HumanoidRootPart") then return false end
+--// Mobile Gift Functions
+local function FindGiftButton(targetPlayer)
+    -- Look for gift-related UI elements in PlayerGui
+    local playerGui = LocalPlayer.PlayerGui
     
-    if not TargetPlayer.Character or not TargetPlayer.Character:FindFirstChild("HumanoidRootPart") then return false end
+    -- Common gift UI names in Roblox games
+    local giftUINames = {
+        "GiftGui", "TradeGui", "PlayerInteraction", "InteractionGui", 
+        "GiftInterface", "PlayerMenu", "SocialGui", "PlayerActions"
+    }
     
-    -- Check if we're close enough
-    local Distance = (Character.HumanoidRootPart.Position - TargetPlayer.Character.HumanoidRootPart.Position).Magnitude
-    if Distance > MaxDistance.Value then return false end
+    for _, guiName in ipairs(giftUINames) do
+        local gui = playerGui:FindFirstChild(guiName)
+        if gui then
+            -- Look for gift-related buttons
+            local giftButtons = {}
+            
+            -- Recursively search for gift buttons
+            local function searchForGiftButton(parent)
+                for _, child in ipairs(parent:GetDescendants()) do
+                    if child:IsA("GuiButton") or child:IsA("TextButton") or child:IsA("ImageButton") then
+                        local text = child.Text and child.Text:lower() or ""
+                        local name = child.Name:lower()
+                        
+                        if text:find("gift") or text:find("trade") or text:find("give") or
+                           name:find("gift") or name:find("trade") or name:find("give") then
+                            table.insert(giftButtons, child)
+                            print(`🎁 Found potential gift button: {child.Name} in {gui.Name}`)
+                        end
+                    end
+                end
+            end
+            
+            searchForGiftButton(gui)
+            
+            if #giftButtons > 0 then
+                return giftButtons
+            end
+        end
+    end
     
-    -- Look at the target player
-    local LookDirection = (TargetPlayer.Character.HumanoidRootPart.Position - Character.HumanoidRootPart.Position).Unit
-    Character.HumanoidRootPart.CFrame = CFrame.lookAt(Character.HumanoidRootPart.Position, TargetPlayer.Character.HumanoidRootPart.Position)
+    return nil
+end
+
+local function FindProximityPrompts(targetPlayer)
+    -- Look for ProximityPrompts near the target player
+    if not targetPlayer.Character then return nil end
     
-    -- Wait for hold duration to simulate the E-hold mechanic
-    wait(Duration or HoldDuration.Value)
+    local prompts = {}
     
-    return true
+    -- Search in target's character
+    for _, descendant in ipairs(targetPlayer.Character:GetDescendants()) do
+        if descendant:IsA("ProximityPrompt") then
+            local actionText = descendant.ActionText:lower()
+            if actionText:find("gift") or actionText:find("trade") or actionText:find("give") then
+                table.insert(prompts, descendant)
+                print(`🎯 Found gift ProximityPrompt: {descendant.ActionText}`)
+            end
+        end
+    end
+    
+    -- Also check nearby workspace for gift-related prompts
+    local character = LocalPlayer.Character
+    if character and character:FindFirstChild("HumanoidRootPart") then
+        local playerPos = character.HumanoidRootPart.Position
+        
+        for _, descendant in ipairs(workspace:GetDescendants()) do
+            if descendant:IsA("ProximityPrompt") then
+                local promptParent = descendant.Parent
+                if promptParent and promptParent:FindFirstChild("HumanoidRootPart") then
+                    local distance = (playerPos - promptParent.HumanoidRootPart.Position).Magnitude
+                    if distance <= 15 then -- Within reasonable range
+                        local actionText = descendant.ActionText:lower()
+                        if actionText:find("gift") or actionText:find("trade") or actionText:find("give") then
+                            table.insert(prompts, descendant)
+                            print(`🎯 Found nearby gift ProximityPrompt: {descendant.ActionText}`)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return #prompts > 0 and prompts or nil
+end
+
+local function TriggerMobileGift(targetPlayer, itemName)
+    print(`📱 Attempting mobile gift: {itemName} → {targetPlayer.Name}`)
+    
+    -- Method 1: Try ProximityPrompts (most common for mobile)
+    local prompts = FindProximityPrompts(targetPlayer)
+    if prompts then
+        for _, prompt in ipairs(prompts) do
+            print(`🎯 Triggering ProximityPrompt: {prompt.ActionText}`)
+            local success, err = pcall(function()
+                fireproximityprompt(prompt)
+            end)
+            if success then
+                print("✅ ProximityPrompt triggered successfully")
+                wait(0.5) -- Give time for UI to appear
+                return true
+            else
+                warn(`❌ ProximityPrompt failed: {err}`)
+            end
+        end
+    end
+    
+    -- Method 2: Try UI buttons
+    local giftButtons = FindGiftButton(targetPlayer)
+    if giftButtons then
+        for _, button in ipairs(giftButtons) do
+            print(`🖱️ Clicking gift button: {button.Name}`)
+            local success, err = pcall(function()
+                -- Simulate button click
+                for _, connection in pairs(getconnections(button.MouseButton1Click)) do
+                    connection:Fire()
+                end
+                
+                -- Alternative: trigger button directly
+                if button.MouseButton1Click then
+                    button.MouseButton1Click:Fire()
+                end
+            end)
+            if success then
+                print("✅ Gift button clicked successfully")
+                wait(0.5)
+                return true
+            else
+                warn(`❌ Button click failed: {err}`)
+            end
+        end
+    end
+    
+    -- Method 3: Try remote events (fallback)
+    local gameEvents = GetGameEvents()
+    if gameEvents and type(gameEvents) == "userdata" then
+        local giftEvents = {"Gift_RE", "SendGift", "GiftPlayer", "TradeItem", "Gift", "PlayerGift"}
+        
+        for _, eventName in ipairs(giftEvents) do
+            local event = gameEvents:FindFirstChild(eventName)
+            if event and event:IsA("RemoteEvent") then
+                print(`📡 Trying RemoteEvent: {eventName}`)
+                local success, err = pcall(function()
+                    -- Try different parameter combinations
+                    event:FireServer(itemName, targetPlayer)
+                    wait(0.1)
+                    event:FireServer(targetPlayer, itemName)
+                    wait(0.1)
+                    event:FireServer(targetPlayer.UserId, itemName)
+                end)
+                if success then
+                    print(`✅ RemoteEvent {eventName} triggered`)
+                    return true
+                else
+                    warn(`❌ RemoteEvent {eventName} failed: {err}`)
+                end
+            end
+        end
+    end
+    
+    return false
 end
 
 local function AutoEquipItem(ItemName)
@@ -417,39 +558,42 @@ local function SendGift(ItemName, TargetName)
         return false, "Could not equip item"
     end
     
-    -- Simulate the hold-E mechanic
-    if not SimulateHoldE(TargetPlayer, HoldDuration and HoldDuration.Value or 1.2) then
-        return false, "Could not simulate hold-E (too far or invalid target)"
+    -- Mobile-optimized gifting (no E key required)
+    local mobileGiftSuccess = TriggerMobileGift(TargetPlayer, ItemName)
+    if mobileGiftSuccess then
+        print("✅ Mobile gift method successful")
+        return true, "Mobile gift completed"
     end
     
-    -- Try to find game events
-    local gameEvents = GetGameEvents()
-    if not gameEvents or type(gameEvents) ~= "userdata" then
-        print("⚠️ No GameEvents found, using basic simulation")
-        return true, "Basic gift simulation completed"
+    -- Fallback: Try traditional hold-E simulation for desktop users
+    print("📱 Mobile methods failed, trying desktop fallback...")
+    
+    -- Check if we're close enough
+    local maxDist = (MaxDistance and MaxDistance.Value) or MaxDistanceValue or 10
+    local Distance = (Character.HumanoidRootPart.Position - TargetPlayer.Character.HumanoidRootPart.Position).Magnitude
+    
+    if Distance > maxDist then
+        return false, "Too far from target for desktop fallback"
     end
     
-    -- Try game-specific gift events
-    local giftEvents = {"Gift_RE", "SendGift", "GiftPlayer", "TradeItem", "Gift"}
+    -- Look at the target player
+    local success, err = pcall(function()
+        Character.HumanoidRootPart.CFrame = CFrame.lookAt(
+            Character.HumanoidRootPart.Position, 
+            TargetPlayer.Character.HumanoidRootPart.Position
+        )
+    end)
     
-    for _, EventName in next, giftEvents do
-        local Event = gameEvents:FindFirstChild(EventName)
-        if Event and Event:IsA("RemoteEvent") then
-            print(`📡 Using event: {EventName}`)
-            local success, err = pcall(function()
-                Event:FireServer(ItemName, TargetPlayer)
-            end)
-            if success then
-                return true, "Gift sent via " .. EventName
-            else
-                warn(`❌ Event {EventName} failed: {err}`)
-            end
-        end
+    if not success then
+        return false, "Could not look at target: " .. tostring(err)
     end
     
-    -- If no specific event found, the hold-E simulation should trigger the game's built-in gifting
-    print("✅ Hold-E simulation completed - relying on game mechanics")
-    return true, "Hold-E simulation completed"
+    -- Wait for hold duration
+    local holdTime = (HoldDuration and HoldDuration.Value) or HoldDurationValue or 1.2
+    wait(holdTime)
+    
+    print("✅ Desktop fallback simulation completed")
+    return true, "Desktop fallback completed"
 end
 
 local function CheckGiftAcceptance(GiftId)
@@ -894,55 +1038,124 @@ _G.TeleportTo = function(playerName, distance)
     end
 end
 
--- Test teleport function
-_G.TestTeleport = function(playerName)
-    print("🧪 Testing teleportation system...")
+-- Mobile gift testing function
+_G.TestMobileGift = function(playerName, itemName)
+    print("📱 Testing mobile gift system...")
     
-    -- Check if player exists
     local targetPlayer = game.Players:FindFirstChild(playerName or "")
     if not targetPlayer then
         print("❌ Please specify a valid player name")
-        print("📋 Available players:")
-        for _, player in pairs(game.Players:GetPlayers()) do
-            if player ~= LocalPlayer then
-                print("   • " .. player.Name)
-            end
-        end
         return
     end
     
+    local testItem = itemName or "TestItem"
     print(`🎯 Target: {targetPlayer.Name}`)
+    print(`🎁 Item: {testItem}`)
     
-    -- Test teleport
-    _G.TeleportTo(targetPlayer.Name, 5)
+    -- Test mobile gift methods
+    local success = TriggerMobileGift(targetPlayer, testItem)
     
-    wait(1)
+    if success then
+        print("✅ Mobile gift test successful!")
+    else
+        print("❌ Mobile gift test failed - may need manual inspection")
+        print("🔍 Try checking PlayerGui for gift-related interfaces")
+    end
+end
+
+-- Scan for gift UI elements
+_G.ScanGiftUI = function()
+    print("🔍 Scanning for gift-related UI elements...")
     
-    -- Check result
-    local character = LocalPlayer.Character
-    if character and character:FindFirstChild("HumanoidRootPart") and 
-       targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        local distance = (character.HumanoidRootPart.Position - targetPlayer.Character.HumanoidRootPart.Position).Magnitude
-        print(`📏 Final distance: {math.floor(distance)} studs`)
-        
-        if distance <= 10 then
-            print("✅ Teleport test successful!")
-        else
-            print("⚠️ Teleport test inconclusive - may need adjustment")
+    local playerGui = LocalPlayer.PlayerGui
+    local foundElements = {}
+    
+    for _, gui in ipairs(playerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            print(`📋 Checking GUI: {gui.Name}`)
+            
+            for _, descendant in ipairs(gui:GetDescendants()) do
+                if descendant:IsA("GuiButton") or descendant:IsA("TextButton") or descendant:IsA("ImageButton") then
+                    local text = descendant.Text and descendant.Text:lower() or ""
+                    local name = descendant.Name:lower()
+                    
+                    if text:find("gift") or text:find("trade") or text:find("give") or
+                       name:find("gift") or name:find("trade") or name:find("give") then
+                        table.insert(foundElements, {
+                            gui = gui.Name,
+                            element = descendant.Name,
+                            text = descendant.Text or "No text",
+                            visible = descendant.Visible
+                        })
+                    end
+                end
+            end
         end
     end
+    
+    if #foundElements > 0 then
+        print("✅ Found gift-related UI elements:")
+        for _, element in ipairs(foundElements) do
+            print(`   • {element.gui}/{element.element}: "{element.text}" (Visible: {element.visible})`)
+        end
+    else
+        print("❌ No gift-related UI elements found")
+        print("💡 Try getting closer to a player or opening gift interface manually")
+    end
+    
+    return foundElements
+end
+
+-- Scan for proximity prompts
+_G.ScanProximityPrompts = function()
+    print("🔍 Scanning for ProximityPrompts...")
+    
+    local foundPrompts = {}
+    
+    -- Check all players' characters
+    for _, player in ipairs(game.Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            for _, descendant in ipairs(player.Character:GetDescendants()) do
+                if descendant:IsA("ProximityPrompt") then
+                    table.insert(foundPrompts, {
+                        player = player.Name,
+                        prompt = descendant,
+                        actionText = descendant.ActionText,
+                        enabled = descendant.Enabled
+                    })
+                end
+            end
+        end
+    end
+    
+    if #foundPrompts > 0 then
+        print("✅ Found ProximityPrompts:")
+        for _, prompt in ipairs(foundPrompts) do
+            print(`   • {prompt.player}: "{prompt.actionText}" (Enabled: {prompt.enabled})`)
+        end
+    else
+        print("❌ No ProximityPrompts found on other players")
+    end
+    
+    return foundPrompts
 end
 
 print("📋 Command system loaded!")
 print("💡 Usage examples:")
 print("   _G.EnableAutoGift('PlayerName', 'ItemName')")
 print("   _G.TeleportTo('PlayerName', 5)")  
-print("   _G.TestTeleport('PlayerName')")
-print("   _G.AutoGiftCommand('autogift', 'true')")
-print("   _G.AutoGiftCommand('target', 'PlayerName')")
+print("   _G.TestMobileGift('PlayerName', 'ItemName')")
+print("   _G.ScanGiftUI()  -- Find gift buttons")
+print("   _G.ScanProximityPrompts()  -- Find gift prompts")
 print("")
-print("🧪 Test teleport first:")
-print("   _G.TestTeleport('PlayerName')")
+print("📱 Mobile-specific commands:")
+print("   _G.TestMobileGift('PlayerName')  -- Test mobile gifting")
+print("   _G.ScanGiftUI()  -- Find gift interface elements")
+print("")
+print("🧪 Recommended mobile testing order:")
+print("   1. _G.TeleportTo('PlayerName', 3)")
+print("   2. _G.ScanProximityPrompts()")
+print("   3. _G.TestMobileGift('PlayerName', 'ItemName')")
 
 --// Start Services
 print("🔧 Starting services...")

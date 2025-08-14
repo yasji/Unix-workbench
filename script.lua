@@ -96,6 +96,8 @@ local GiftConfig = {
     Cooldown = 3,
     MaxRetries = 3,
     RetryDelay = 2,
+    AcceptTimeout = 8, -- seconds to wait to detect acceptance
+    AcceptCheckInterval = 0.5, -- polling interval
 }
 
 --// Gift State
@@ -109,6 +111,77 @@ local GiftState = {
     RejectedGifts = {},
     GiftQueue = {},
 }
+
+-- Remote event monitoring
+local RemoteEventHooks = {}
+
+local function SnapshotInventory()
+    local counts = {}
+    -- Backpack
+    for _, tool in ipairs(Backpack:GetChildren()) do
+        if tool:IsA("Tool") then
+            counts[tool.Name] = (counts[tool.Name] or 0) + 1
+        end
+    end
+    -- Character
+    local character = LocalPlayer.Character
+    if character then
+        for _, tool in ipairs(character:GetChildren()) do
+            if tool:IsA("Tool") then
+                counts[tool.Name] = (counts[tool.Name] or 0) + 1
+            end
+        end
+    end
+    return counts
+end
+
+local function HookRemoteEvents()
+    local gameEvents = GetGameEvents()
+    if not gameEvents or type(gameEvents) ~= "userdata" then return end
+    for _, child in ipairs(gameEvents:GetChildren()) do
+        if child:IsA("RemoteEvent") then
+            if not RemoteEventHooks[child] then
+                RemoteEventHooks[child] = child.OnClientEvent:Connect(function(...)
+                    local args = {...}
+                    -- Try to associate this event with a pending gift
+                    for giftId, record in pairs(GiftState.PendingGifts) do
+                        local matched = false
+                        for _, a in ipairs(args) do
+                            if typeof(a) == "string" then
+                                if a:lower():find(record.Target:lower()) or a:lower():find(record.Item:lower()) then
+                                    matched = true
+                                    break
+                                end
+                            elseif typeof(a) == "Instance" and a:IsA("Player") then
+                                if a.Name == record.Target then
+                                    matched = true
+                                    break
+                                end
+                            end
+                        end
+                        if matched then
+                            record.AcceptSignal = true
+                            record.AcceptedAt = tick()
+                            print(`✅ Remote event suggests acceptance for {record.Item} → {record.Target}`)
+                        end
+                    end
+                end)
+                print(`📡 Hooked remote event: {child.Name}`)
+            end
+        end
+    end
+    -- Listen for new RemoteEvents added later
+    if not RemoteEventHooks.__childAdded and gameEvents.ChildAdded then
+        RemoteEventHooks.__childAdded = gameEvents.ChildAdded:Connect(function(child)
+            if child:IsA("RemoteEvent") then
+                wait(0.1)
+                HookRemoteEvents()
+            end
+        end)
+    end
+end
+
+HookRemoteEvents()
 
 --// Globals
 local AutoGift, SelectedItem, TargetPlayer, GiftStatus, MaxDistance, HoldDuration
@@ -596,11 +669,63 @@ local function SendGift(ItemName, TargetName)
     return true, "Desktop fallback completed"
 end
 
-local function CheckGiftAcceptance(GiftId)
-    -- This would need to be implemented based on the actual game's gift system
-    -- For now, we'll simulate random acceptance after delay
-    wait(math.random(2, 5))
-    return math.random() > 0.3 -- 70% acceptance rate
+-- Real(ish) acceptance detection: monitors inventory delta & remote event signals
+local function MonitorGiftAcceptance(giftId)
+    local record = GiftState.PendingGifts[giftId]
+    if not record then return end
+
+    local startSnapshot = record.InventorySnapshot or SnapshotInventory()
+    record.InventorySnapshot = startSnapshot
+    local startTime = tick()
+    local itemName = record.Item
+    local targetName = record.Target
+
+    local function currentCount()
+        local snap = SnapshotInventory()
+        return snap[itemName] or 0
+    end
+
+    local initialCount = startSnapshot[itemName] or 0
+
+    while tick() - startTime < GiftConfig.AcceptTimeout do
+        -- If remote event flagged acceptance
+        if record.AcceptSignal then
+            GiftState.AcceptedGifts[giftId] = record
+            GiftStatus.Text = `✅ Accepted: {itemName} by {targetName}`
+            GiftState.PendingGifts[giftId] = nil
+            return true
+        end
+        -- Inventory delta: item count decreased (assumes item consumed on gift)
+        local current = currentCount()
+        if current < initialCount then
+            GiftState.AcceptedGifts[giftId] = record
+            GiftStatus.Text = `✅ (Inv) Accepted: {itemName} by {targetName}`
+            GiftState.PendingGifts[giftId] = nil
+            return true
+        end
+        wait(GiftConfig.AcceptCheckInterval)
+    end
+
+    -- Timed out => treat as rejection / not accepted
+    GiftState.RejectedGifts[giftId] = record
+    GiftState.PendingGifts[giftId] = nil
+    GiftStatus.Text = `⌛ Not accepted: {itemName} by {targetName}`
+
+    -- Retry logic
+    local autoRetry = (AutoRetry and AutoRetry.Value) or true
+    local maxRetries = (GiftRetries and GiftRetries.Value) or GiftConfig.MaxRetries
+    local retryDelay = (RetryDelay and RetryDelay.Value) or GiftConfig.RetryDelay
+    record.Retries = (record.Retries or 0) + 1
+    if autoRetry and record.Retries <= maxRetries then
+        print(`🔄 Retrying gift {itemName} → {targetName} (attempt {record.Retries})`)
+        task.delay(retryDelay, function()
+            GiftState.GiftQueue[#GiftState.GiftQueue + 1] = {Item = itemName, Target = targetName}
+            if GiftStatus then GiftStatus.Text = `🔄 Retry queued ({record.Retries}/{maxRetries})` end
+        end)
+    else
+        print(`❌ Gift not accepted after {record.Retries - 1} retries: {itemName} → {targetName}`)
+    end
+    return false
 end
 
 local function ProcessGift(ItemName, TargetName)
@@ -620,34 +745,21 @@ local function ProcessGift(ItemName, TargetName)
             Item = ItemName,
             Target = TargetName,
             Time = Now,
-            Retries = 0
+            Retries = GiftState.PendingGifts[GiftId] and GiftState.PendingGifts[GiftId].Retries or 0,
+            InventorySnapshot = SnapshotInventory(),
         }
-        
+
         GiftStatus.Text = `Auto-Sent: {ItemName} → {TargetName}`
-        
-        -- Check acceptance in background
-        coroutine.wrap(function()
-            local Accepted = CheckGiftAcceptance(GiftId)
-            if Accepted then
-                GiftState.AcceptedGifts[GiftId] = GiftState.PendingGifts[GiftId]
-                GiftStatus.Text = `✅ Accepted: {ItemName} by {TargetName}`
-            else
-                GiftState.RejectedGifts[GiftId] = GiftState.PendingGifts[GiftId]
-                if AutoRetry.Value and GiftState.PendingGifts[GiftId].Retries < GiftRetries.Value then
-                    -- Queue for retry
-                    wait(RetryDelay.Value)
-                    GiftState.GiftQueue[#GiftState.GiftQueue + 1] = {
-                        Item = ItemName,
-                        Target = TargetName
-                    }
-                    GiftStatus.Text = `🔄 Queued retry: {ItemName} → {TargetName}`
-                else
-                    GiftStatus.Text = `❌ Rejected: {ItemName} by {TargetName}`
-                end
+
+        -- Start acceptance monitor
+        task.spawn(function()
+            local ok, err = pcall(function()
+                MonitorGiftAcceptance(GiftId)
+            end)
+            if not ok then
+                warn("Acceptance monitor error: " .. tostring(err))
             end
-            GiftState.PendingGifts[GiftId] = nil
-        end)()
-        
+        end)
         return true
     else
         GiftStatus.Text = `❌ Failed: {Message or "Unknown error"}`
@@ -686,7 +798,8 @@ local function AutoGiftLoop()
         Target = game.Players:FindFirstChild(TargetName)
         
         -- Auto-teleport to specified player if enabled
-        local shouldTeleport = (AutoTeleport and AutoTeleport.Value) or AutoTeleportEnabled
+    -- Teleport strictly follows the checkbox/state now (prevents teleporting after disabling)
+    local shouldTeleport = (AutoTeleport and AutoTeleport.Value) == true
         if Target and shouldTeleport then
             local Character = LocalPlayer.Character
             if Character and Character:FindFirstChild("HumanoidRootPart") and Target.Character and Target.Character:FindFirstChild("HumanoidRootPart") then
@@ -749,7 +862,8 @@ local function HandleAutomatedGifting()
     
     -- Check distance and auto-teleport if needed
     local Distance = (Character.HumanoidRootPart.Position - TargetPlayerObj.Character.HumanoidRootPart.Position).Magnitude
-    local shouldTeleport = (AutoTeleport and AutoTeleport.Value) or AutoTeleportEnabled
+    -- Teleport strictly follows the checkbox/state now
+    local shouldTeleport = (AutoTeleport and AutoTeleport.Value) == true
     local teleportThreshold = (TeleportDistance and TeleportDistance.Value) or TeleportDistanceValue or 15
     
     if shouldTeleport and Distance > teleportThreshold then
@@ -969,8 +1083,12 @@ local Commands = {
             AutoGift.Value = true
             print("✅ Auto-Gift enabled")
         else
+            -- Properly disable
             AutoGift.Value = false
-            print("❌ Auto-Gift disabled")
+            -- Clear pending operations so gifting/teleport stops immediately
+            GiftState.GiftQueue = {}
+            GiftState.PendingGifts = {}
+            print("❌ Auto-Gift disabled (queues cleared)")
         end
     end,
     
@@ -990,7 +1108,7 @@ local Commands = {
             print("✅ Auto-Teleport enabled")
         else
             AutoTeleport.Value = false
-            print("❌ Auto-Teleport disabled")
+            print("❌ Auto-Teleport disabled (no more automatic movement)")
         end
     end,
     
@@ -1024,6 +1142,19 @@ _G.EnableAutoGift = function(targetName, itemName)
     Commands.autogift("true")
     Commands.teleport("true")
     print("🎁 Auto-Gift system activated!")
+end
+
+-- Quick disable function
+_G.DisableAutoGift = function()
+    print("🛑 Disabling Auto-Gift system...")
+    Commands.autogift("false")
+    Commands.teleport("false")
+    print("🧹 Cleared queues & stopped loops")
+end
+
+-- Quick disable teleport only
+_G.DisableTeleport = function()
+    Commands.teleport("false")
 end
 
 -- Quick teleport function
